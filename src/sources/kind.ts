@@ -108,6 +108,11 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   policy?: SourcePolicyPart<Record<string, unknown> & { allowed: { id: string; name?: string }[] }>
   /** Rereads display names for row keys (such as chat names), stores the resolved names in `KV.sources.labels(kind)`, and returns them. */
   refreshLabels?(host: SourceHost, signal?: AbortSignal): Promise<Record<string, string>>
+  /**
+   * Binds the PR numbered `number` that an Executor reports to the ticket, for tickets that started on this kind; returns why
+   * it refuses. Without it, `pr_number` names a GitHub PR.
+   */
+  claimPull?(ctx: SourceContext, ticketId: string, number: number, signal?: AbortSignal): Promise<string | undefined>
   /** Variables the kind registers with the execution environment and how their values are computed. */
   environment?: { variables: readonly VariableSpec[]; values(input: EnvironmentInput<C>): Record<string, string> }
 }

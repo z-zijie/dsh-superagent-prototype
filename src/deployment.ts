@@ -47,14 +47,22 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+export const GitcodeAccountsSchema = z.object({
+  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  cli: z.string().trim().default(''),
+})
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape),
+  gitcode: Object.keys(GitcodeAccountsSchema.shape) }
 
 export interface Deployment extends Machine {
   repository: string
   github: { cli: string; login: string; noreply: string }
   feishu?: FeishuBot
+  gitcode?: GitcodeAccount
 }
+/** The GitCode account `gc` acts as, which may be the operator's own; `email` is its commit email. */
+export interface GitcodeAccount { cli: string; repository: string; login: string; email: string }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
@@ -128,4 +136,23 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
   return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+}
+
+const GitcodeUser = z.looseObject({ login: z.string().min(1), email: z.string().nullish() })
+/**
+ * Verify the GitCode Source's CLI and that its account can read the repository; undefined while the Source names no CLI
+ * or repository. The CLI must find its credentials itself, as setup and worker shells drop variables such as GITCODE_TOKEN.
+ */
+export async function resolveGitcode(machine: Machine, gitcode: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<GitcodeAccount | undefined> {
+  const { cli: name, repository } = GitcodeAccountsSchema.parse(gitcode ?? {})
+  if (!name || !repository) return undefined
+  let cli: string
+  try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { throw new SetupError('gitcodeCliMissing', { output: reason(error) }) }
+  const text = await probe([cli, '--no-interactive', 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitcodeCliSignedOut', { output: reason(error) }) })
+  const user = parsed(GitcodeUser, text)
+  if (!user) throw new SetupError('gitcodeCliSignedOut')
+  await probe([cli, '--no-interactive', 'api', `repos/${repository}`]).catch((error: unknown) => {
+    throw new SetupError('gitcodeRepositoryUnreadable', { account: user.login, repository, output: reason(error) })
+  })
+  return { cli, repository, login: user.login, email: user.email || `${user.login}@users.noreply.gitcode.com` }
 }
