@@ -78,12 +78,16 @@ def processes(profile):
     return found + [pid] if pid not in found and running(pid, profile) else found
 
 
+# The service listens on loopback only; a system or environment proxy (as macOS supplies to urllib) must not carry these requests.
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def state(url):
     """Fetch health and setup status from the management API, or return None if unreachable."""
     request = urllib.request.Request(url.rstrip('/') + '/orchestrator/api/state',
                                      headers={'x-orchestrator-request': '1'})
     try:
-        with urllib.request.urlopen(request, timeout=2) as response:
+        with LOCAL.open(request, timeout=2) as response:
             value = json.load(response)
         # Keys omitted by another version read as empty so the service is not mistaken for unreachable.
         health, setup = value.get('health') or {}, value.get('setup') or {}
