@@ -47,10 +47,21 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+const GITCODE_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 export const GitcodeAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  /** More repositories the Source watches besides `repository`, which stays the default one. */
+  repositories: z.array(z.object({ id: z.string().trim().regex(GITCODE_REPOSITORY, 'owner/name') }).strict()).default([]),
   cli: z.string().trim().default(''),
 })
+/** The repositories a GitCode configuration watches, the default one first, each once. */
+export function gitcodeRepositories(config: { repository?: string; repositories?: readonly { id: string }[] }): string[] {
+  const names: string[] = []
+  for (const name of [config.repository ?? '', ...(config.repositories ?? []).map(row => row.id)]) {
+    if (name && !names.some(known => known.toLowerCase() === name.toLowerCase())) names.push(name)
+  }
+  return names
+}
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape),
   gitcode: Object.keys(GitcodeAccountsSchema.shape) }
@@ -61,8 +72,11 @@ export interface Deployment extends Machine {
   feishu?: FeishuBot
   gitcode?: GitcodeAccount
 }
-/** The GitCode account `gc` acts as, which may be the operator's own; `email` is its commit email. */
-export interface GitcodeAccount { cli: string; repository: string; login: string; email: string }
+/**
+ * The GitCode account `gc` acts as, which may be the operator's own; `email` is its commit email. `repository` is the default
+ * repository and `repositories` every watched one, the default first.
+ */
+export interface GitcodeAccount { cli: string; repository: string; repositories?: string[]; login: string; email: string }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
@@ -139,20 +153,28 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
 }
 
 const GitcodeUser = z.looseObject({ login: z.string().min(1), email: z.string().nullish() })
+const GitcodeRepository = z.looseObject({ full_name: z.string().regex(GITCODE_REPOSITORY).optional() })
 /**
- * Verify the GitCode Source's CLI and that its account can read the repository; undefined while the Source names no CLI
- * or repository. The CLI must find its credentials itself, as setup and worker shells drop variables such as GITCODE_TOKEN.
+ * Verify the GitCode Source's CLI and that its account can read every watched repository; undefined while the Source names
+ * no CLI or repository. The CLI must find its credentials itself, as setup and worker shells drop variables such as
+ * GITCODE_TOKEN. Repository names become GitCode's canonical spelling.
  */
 export async function resolveGitcode(machine: Machine, gitcode: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<GitcodeAccount | undefined> {
-  const { cli: name, repository } = GitcodeAccountsSchema.parse(gitcode ?? {})
-  if (!name || !repository) return undefined
+  const config = GitcodeAccountsSchema.parse(gitcode ?? {})
+  const name = config.cli
+  const watched = gitcodeRepositories(config)
+  if (!name || !watched.length) return undefined
   let cli: string
   try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { throw new SetupError('gitcodeCliMissing', { output: reason(error) }) }
   const text = await probe([cli, '--no-interactive', 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitcodeCliSignedOut', { output: reason(error) }) })
   const user = parsed(GitcodeUser, text)
   if (!user) throw new SetupError('gitcodeCliSignedOut')
-  await probe([cli, '--no-interactive', 'api', `repos/${repository}`]).catch((error: unknown) => {
-    throw new SetupError('gitcodeRepositoryUnreadable', { account: user.login, repository, output: reason(error) })
-  })
-  return { cli, repository, login: user.login, email: user.email || `${user.login}@users.noreply.gitcode.com` }
+  const repositories: string[] = []
+  for (const repository of watched) {
+    const text = await probe([cli, '--no-interactive', 'api', `repos/${repository}`]).catch((error: unknown) => {
+      throw new SetupError('gitcodeRepositoryUnreadable', { account: user.login, repository, output: reason(error) })
+    })
+    repositories.push(parsed(GitcodeRepository, text)?.full_name ?? repository)
+  }
+  return { cli, repository: repositories[0]!, repositories, login: user.login, email: user.email || `${user.login}@users.noreply.gitcode.com` }
 }

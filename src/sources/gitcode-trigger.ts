@@ -8,10 +8,19 @@ import type { SourceContext } from './host.ts'
 import type { ChannelLink, ContextMessage, ThreadContext } from './kind.ts'
 
 export const SOURCE = 'gitcode'
-/** GitCode numbers Issues and PRs separately, so a Thread names its kind: `gitcode:issue:<n>` or `gitcode:pr:<n>`. */
+/**
+ * The Source watches several repositories, and GitCode numbers Issues and PRs separately, so a Thread names both:
+ * `gitcode:<owner>/<name>:issue:<n>` or `gitcode:<owner>/<name>:pr:<n>`.
+ */
 export type Kind = 'issues' | 'pulls'
-export const threadId = (kind: Kind, number: number): string => `${kind === 'pulls' ? 'pr' : 'issue'}:${number}`
-export const threadKey = (kind: Kind, number: number): string => `${SOURCE}:${threadId(kind, number)}`
+export const threadId = (repository: string, kind: Kind, number: number): string =>
+  `${repository.toLowerCase()}:${kind === 'pulls' ? 'pr' : 'issue'}:${number}`
+export const threadKey = (repository: string, kind: Kind, number: number): string => `${SOURCE}:${threadId(repository, kind, number)}`
+/** The repository, kind and number a Thread ID names. */
+export function parseThread(id: string): { repository: string; kind: Kind; number: number } | undefined {
+  const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):(pr|issue):(\d+)$/.exec(id)
+  return match ? { repository: match[1]!, kind: match[2] === 'pr' ? 'pulls' : 'issues', number: Number(match[3]) } : undefined
+}
 export const gitcodePage = (repository: string, kind: Kind, number: number): string =>
   `https://gitcode.com/${repository}/${kind === 'pulls' ? 'merge_requests' : 'issues'}/${number}`
 /** Hidden in every reply the Source posts, so a retried message is not posted twice and the agent never hears itself. */
@@ -23,25 +32,41 @@ export function account(commands: Pick<Commands, 'deployment'>): GitcodeAccount 
   if (!resolved) throw new Error('The GitCode Source has no working gc CLI; see its setup problem')
   return resolved
 }
+/** Every repository the Source watches, the default one first. */
+export const watched = (commands: Pick<Commands, 'deployment'>): string[] => {
+  const { repository, repositories } = account(commands)
+  return repositories?.length ? repositories : [repository]
+}
+/**
+ * The watched repository `name` names, in GitCode's spelling; the default repository for an empty name.
+ * @throws for a repository the Source does not watch.
+ */
+export function repositoryOf(commands: Pick<Commands, 'deployment'>, name?: string): string {
+  if (!name) return account(commands).repository
+  const found = watched(commands).find(repository => sameName(repository, name))
+  if (!found) throw new Error(`The GitCode Source does not watch ${name}`)
+  return found
+}
 /** Runs the agent's `gc` non-interactively. */
 export const gcRun = (commands: Commands, ...args: string[]): Promise<string> => commands.run(account(commands).cli, ['--no-interactive', ...args])
 /**
- * Calls the GitCode API on a path within the configured repository; a path starting `v8/` uses API v8 (Actions).
+ * Calls the GitCode API on a path within a watched repository, the default one unless named; a path starting `v8/` uses
+ * API v8 (Actions).
  * @throws CliError with GitCode's HTTP status as `code`.
  */
-export async function api<T>(commands: Commands, schema: z.ZodType<T>, path: string): Promise<T> {
-  if (/^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)) throw new Error('GitCode calls are restricted to the configured repository')
-  const { repository } = account(commands)
+export async function api<T>(commands: Commands, schema: z.ZodType<T>, path: string, name?: string): Promise<T> {
+  if (/^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)) throw new Error('GitCode calls are restricted to the watched repositories')
+  const repository = repositoryOf(commands, name)
   const v8 = path.startsWith('v8/')
   const endpoint = v8 ? `/api/v8/repos/${repository}/${path.slice(3)}` : `repos/${repository}${path ? `/${path}` : ''}`
   return schema.parse(JSON.parse(await gcRun(commands, 'api', endpoint)))
 }
 /** Every page of a list (GitCode caps a page at 100), skipping items that fail `item`. */
-export async function pages<T>(commands: Commands, item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
+export async function pages<T>(commands: Commands, item: z.ZodType<T>, path: string, tally?: Tally, repository?: string): Promise<T[]> {
   const all: T[] = []
   const join = path.includes('?') ? '&' : '?'
   for (let page = 1; ; page++) {
-    const listed = await api(commands, z.array(z.unknown()), `${path}${join}per_page=100&page=${page}`)
+    const listed = await api(commands, z.array(z.unknown()), `${path}${join}per_page=100&page=${page}`, repository)
     all.push(...validItems(item, listed, tally))
     if (listed.length < 100) return all
   }
@@ -82,7 +107,7 @@ export const skipped = (author: string, body: string, agent: string, keyword: st
   body.includes(MARKER) || (sameName(author, agent) && !addressed(body, agent, keyword))
 
 const channel = (repository: string, kind: Kind, number: number, url?: string, discussion?: string): ChannelRef =>
-  ({ source: SOURCE, thread: threadKey(kind, number),
+  ({ source: SOURCE, thread: threadKey(repository, kind, number),
     address: { repository, kind, number: String(number), ...url ? { url } : {}, ...discussion ? { discussion } : {} } })
 const author = (login: string, text: string, agent: string, keyword: string) => ({ actor: { source: SOURCE, id: login }, human: true,
   ...addressed(text, agent, keyword) ? { addressed: 'mention' as const } : {} })
@@ -92,7 +117,7 @@ export function openedTrigger(repository: string, kind: Kind, item: GitcodeItem,
   const body = plain(item.body ?? '')
   const isPr = kind === 'pulls'
   return { id: key('gitcode-opened', repository, kind, String(item.number)), source: SOURCE,
-    threads: [{ source: SOURCE, id: threadId(kind, item.number) }], ...author(item.user.login, body, agent, keyword), at: item.created_at,
+    threads: [{ source: SOURCE, id: threadId(repository, kind, item.number) }], ...author(item.user.login, body, agent, keyword), at: item.created_at,
     text: `${item.title ?? ''}\n\n${body}`, channel: channel(repository, kind, item.number, item.html_url), url: item.html_url,
     meta: { repository, number: item.number, isPr, kind: isPr ? 'pull' : 'issue', ...isPr ? { prAuthor: item.user.login } : {} } }
 }
@@ -102,7 +127,7 @@ export function commentTrigger(repository: string, kind: Kind, number: number, c
   const body = plain(comment.body ?? '')
   const discussion = inline(comment) ? comment.discussion_id! : undefined
   return { id: key('gitcode-comment', repository, kind, String(comment.id), comment.updated_at ?? ''), source: SOURCE,
-    threads: [{ source: SOURCE, id: threadId(kind, number) }], ...author(comment.user.login, body, agent, keyword),
+    threads: [{ source: SOURCE, id: threadId(repository, kind, number) }], ...author(comment.user.login, body, agent, keyword),
     at: comment.updated_at ?? comment.created_at, text: [place(comment), body].filter(Boolean).join('\n\n'),
     channel: channel(repository, kind, number, url, discussion), url,
     meta: { repository, number, isPr: kind === 'pulls', kind: discussion ? 'inline' : 'conversation', commentId: comment.id,
@@ -114,10 +139,10 @@ export async function sendGitcode(host: Pick<SourceContext, 'commands'>, message
   const { commands } = host
   const { kind, number = '', discussion } = message.channel.address
   if (!number || (kind !== 'issues' && kind !== 'pulls')) throw new Error('Missing GitCode reply target')
-  const { repository } = account(commands)
+  const repository = repositoryOf(commands, message.channel.address.repository)
   const marker = `${MARKER}${message.id} -->`
   try {
-    if ((await pages(commands, CommentSchema, `${kind}/${number}/comments`)).some(comment => (comment.body ?? '').includes(marker))) return 'sent'
+    if ((await pages(commands, CommentSchema, `${kind}/${number}/comments`, undefined, repository)).some(comment => (comment.body ?? '').includes(marker))) return 'sent'
     const body = `${message.text}\n\n${marker}`
     if (kind === 'pulls' && discussion) await gcRun(commands, 'pr', 'reply', number, '--discussion', discussion, '-R', repository, '--body', body)
     else await gcRun(commands, kind === 'pulls' ? 'pr' : 'issue', 'comment', number, '-R', repository, '--body', body)
@@ -150,9 +175,9 @@ export const gitcodeThreadContext: ThreadContext<unknown> = {
   async read(commands, trigger, part, cursor) {
     const kind: Kind = trigger.meta.isPr === true ? 'pulls' : 'issues'
     const number = Number(trigger.meta.number)
-    const { repository } = account(commands)
+    const repository = repositoryOf(commands, typeof trigger.meta.repository === 'string' ? trigger.meta.repository : undefined)
     if (typeof trigger.meta.discussion === 'string') {
-      const thread = (await pages(commands, CommentSchema, `pulls/${number}/comments`))
+      const thread = (await pages(commands, CommentSchema, `pulls/${number}/comments`, undefined, repository))
         .filter(comment => comment.discussion_id === trigger.meta.discussion).sort(oldestFirst)
         .map(comment => message(repository, kind, number, comment))
       const read = part === 'thread' ? thread : thread.slice(0, 1)
@@ -161,10 +186,10 @@ export const gitcodeThreadContext: ThreadContext<unknown> = {
     const page = Number(cursor ?? '1')
     const messages: ContextMessage[] = []
     if (page === 1) {
-      const item = await api(commands, ItemSchema, `${kind}/${number}`)
+      const item = await api(commands, ItemSchema, `${kind}/${number}`, repository)
       messages.push({ id: item.html_url, from: item.user.login, at: item.created_at, text: `${item.title ?? ''}\n\n${item.body ?? ''}`, url: item.html_url })
     }
-    const listed = await api(commands, z.array(z.unknown()), `${kind}/${number}/comments?per_page=100&page=${page}`)
+    const listed = await api(commands, z.array(z.unknown()), `${kind}/${number}/comments?per_page=100&page=${page}`, repository)
     messages.push(...validItems(CommentSchema, listed).sort(oldestFirst).map(comment => message(repository, kind, number, comment)))
     const next = listed.length === 100 ? String(page + 1) : undefined
     return { messages, next, body: { messages, next_resource: next ?? null } }

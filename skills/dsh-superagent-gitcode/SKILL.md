@@ -3,9 +3,9 @@ name: dsh-superagent-gitcode
 description: Work on GitCode issues, pull requests, review discussions and CI using gc.
 ---
 
-The GitCode Source watches `$DSH_SUPERAGENT_GITCODE_REPOSITORY` from the execution environment section. Use `gc` for every GitCode operation, always with `--no-interactive` and `-R $DSH_SUPERAGENT_GITCODE_REPOSITORY` (or an explicit `repos/<owner>/<repo>/…` path for `gc api`). Never use another account, token or the web UI. `gc` acts as `$DSH_SUPERAGENT_GITCODE_ACCOUNT`.
+The GitCode Source watches the repositories in `$DSH_SUPERAGENT_GITCODE_REPOSITORIES` from the execution environment section. `$DSH_SUPERAGENT_GITCODE_REPOSITORY` is this ticket's repository: the one it started in, or the default one. Use `gc` for every GitCode operation, always with `--no-interactive` and `-R $DSH_SUPERAGENT_GITCODE_REPOSITORY` (or an explicit `repos/<owner>/<repo>/…` path for `gc api`). Work in another watched repository only when the request names it. Never use another account, token or the web UI. `gc` acts as `$DSH_SUPERAGENT_GITCODE_ACCOUNT`.
 
-GitCode numbers Issues and pull requests separately: thread `gitcode:issue:<n>` is Issue n and `gitcode:pr:<n>` is PR n; on GitCode a PR is written `!n` and its page is `…/merge_requests/<n>`. `$DSH_SUPERAGENT_GITCODE_KIND` says whether `$DSH_SUPERAGENT_GITCODE_NUMBER` is an issue or a pr.
+GitCode numbers Issues and pull requests separately in each repository: thread `gitcode:<owner>/<repo>:issue:<n>` is Issue n and `gitcode:<owner>/<repo>:pr:<n>` is PR n there; on GitCode a PR is written `!n` and its page is `…/merge_requests/<n>`. `$DSH_SUPERAGENT_GITCODE_KIND` says whether `$DSH_SUPERAGENT_GITCODE_NUMBER` is an issue or a pr.
 
 **The account may be a person's own.** Everything the agent posts appears under the same name as that person, so:
 
@@ -25,5 +25,5 @@ Writing:
 - Answer a code comment in its review discussion: `gc pr reply <n> --discussion <DiscussionID> --body <text> -R …`. Use `gc pr comment <n>` for the conversation, and `--path`/`--position` for a new code comment.
 - Work in the ticket directory; push with plain `git push` over https, which takes its gitcode.com credentials from gc. Open a PR from a branch whose last path segment is `$DSH_SUPERAGENT_NAME`: `gc pr create -R … --head <branch> --base <default branch> --title … --body …`. A PR that started the ticket is fetched as `$DSH_SUPERAGENT_GITCODE_PR_HEAD`.
 - Commit as the author the Delivery requirements section names, otherwise as `$DSH_SUPERAGENT_GITCODE_ACCOUNT` <`$DSH_SUPERAGENT_GITCODE_COMMIT_EMAIL`>.
-- Immediately after creating or adopting the ticket's PR, call `orchestrator_report` with `state: progress` and `pr_number`: for a ticket that started on GitCode it names the GitCode PR. The host then follows the PR: its comments, its CI changes, and its merge or close, which ends the ticket.
+- Immediately after creating or adopting the ticket's PR, call `orchestrator_report` with `state: progress` and `pr_number`: for a ticket that started on GitCode it names the GitCode PR in `$DSH_SUPERAGENT_GITCODE_REPOSITORY`. The host then follows the PR: its comments, its CI changes, and its merge or close, which ends the ticket.
 - Never merge a PR, close an Issue, or change repository settings unless the Delivery requirements section says so.
