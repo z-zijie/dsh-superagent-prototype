@@ -72,6 +72,34 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
   await rename(temporary, file)
 }
 
+/** Hidden in every GitCode post a worker writes, so the GitCode Source, whose account may be a person's own, never hears it. */
+export const GITCODE_AGENT_MARK = '<!-- dsh-superagent:agent -->'
+/**
+ * Shell that runs the GitCode CLI `program`, appending `GITCODE_AGENT_MARK` to the body of `gc issue|pr comment|create|edit|
+ * reply|review`: to a `-b`/`--body`/`-c`/`--comment` value, and to a copy of a `-F`/`--body-file`/`--comment-file` file
+ * (`-` reads standard input). Other commands, and a body that already has a dsh-superagent marker, pass unchanged.
+ */
+export function markPosts(program: string): string {
+  return [
+    `mark=${shellQuote(GITCODE_AGENT_MARK)}`,
+    // The command is the first two words that are not flags, such as `pr comment` in `gc --no-interactive pr comment 3 -b …`.
+    'cmd=; sub=',
+    'for arg in "$@"; do case $arg in -*) ;; *) if [ -z "$cmd" ]; then cmd=$arg; elif [ -z "$sub" ]; then sub=$arg; fi ;; esac; done',
+    'case "$cmd $sub" in "issue comment"|"issue create"|"issue edit"|"pr comment"|"pr create"|"pr edit"|"pr reply"|"pr review") ;; *) cmd= ;; esac',
+    'marked() { case $1 in *"<!-- dsh-superagent:"*) printf %s "$1" ;; *) printf "%s\\n\\n%s" "$1" "$mark" ;; esac; }',
+    'copy() { file=$(mktemp "${TMPDIR:-/tmp}/dsh-superagent-gc.XXXXXX") || exit 1; if [ "$1" = - ]; then cat; else cat -- "$1"; fi > "$file" || exit 1',
+    '  grep -q "<!-- dsh-superagent:" "$file" || printf "\\n\\n%s\\n" "$mark" >> "$file"; printf %s "$file"; }',
+    'next=; n=$#',
+    'while [ $n -gt 0 ]; do arg=$1; shift; n=$((n - 1))',
+    '  if [ -n "$cmd" ]; then case $next in text) arg=$(marked "$arg") ;; file) arg=$(copy "$arg") || exit 1 ;; esac',
+    '    case $next:$arg in :-b|:--body|:-c|:--comment) next=text ;; :-F|:--body-file|:--comment-file) next=file ;;',
+    '      :--body=*|:--comment=*) arg="${arg%%=*}=$(marked "${arg#*=}")"; next= ;; :--body-file=*|:--comment-file=*) arg="${arg%%=*}=$(copy "${arg#*=}")" || exit 1; next= ;;',
+    '      *) next= ;; esac; fi',
+    '  set -- "$@" "$arg"; done',
+    `exec ${shellQuote(program)} "$@"`,
+  ].join('\n')
+}
+
 /**
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Shims cover gh, lark-cli and gc. Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
@@ -99,7 +127,7 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
   await shim('gh', run(github.cli))
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
-  await shim('gc', gitcode ? run(gitcode.cli) : fail('gc is unavailable: this installation has no GitCode account.'))
+  await shim('gc', gitcode ? `${withoutShims}\n${markPosts(gitcode.cli)}` : fail('gc is unavailable: this installation has no GitCode account.'))
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
     await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
   }

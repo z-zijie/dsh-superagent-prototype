@@ -328,7 +328,7 @@ export const gitcodeKind: SourceKind<GitcodeConfig> = {
     schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_.-]+$/) }).strict()).default([]) }).strict(),
     fields: [{ key: 'allowed', type: 'rows', label: { zh: '能发起工作的 GitCode 账号', en: 'GitCode accounts that may originate work' },
       columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9_.\\-]+' }] }],
-    explicit: { zh: '名单里的账号发出以“@智能体账号 唤醒词”开头的 Issue、PR 或评论。', en: 'An account on the list posts an Issue, PR or comment that starts "@agent-account keyword".' },
+    explicit: { zh: '名单里的账号发出以“@智能体账号 唤醒词”开头的 Issue、PR 或评论；唤醒词为空时，提到 @智能体账号 即可。', en: 'An account on the list posts an Issue, PR or comment that starts "@agent-account keyword", or, with an empty keyword, mentions @agent-account.' },
     rows(stored) {
       const config = GitcodeConfigSchema.partial().parse(stored)
       const note = (observed: boolean | undefined) => observed ? { zh: '全部', en: 'All' } : { zh: '仅 @', en: '@ only' }

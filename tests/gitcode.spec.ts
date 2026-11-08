@@ -97,6 +97,25 @@ describe('GitCode source', () => {
     expect(h.received.slice(2).map(t => t.id)).toEqual(ids)
   })
 
+  it('with an empty keyword, only the listed account\'s own posts that mention it anywhere are requests', async () => {
+    const h = host()
+    stub(h.commands, { issues: [item(8, 'plain issue', 'bob')], pulls: [],
+      'issues/8/comments': [comment(1, 'thanks [@me](https://gitcode.com/me), please look', 'bob', 2), comment(2, 'looks fine, cc @me', 'me', 3),
+        comment(3, 'note to self', 'me', 4), comment(4, 'fixed, @me\n\n<!-- dsh-superagent:agent -->', 'me', 5)] })
+    rewind(h)
+    const open = gitcodeKind.schema.parse({ repository: REPO, cli: 'gc-test', keyword: '' })
+    await pollRound(h.ctx, open)
+    // Others' posts are received and the Policy decides; the account's own posts only when they mention it, and never marked ones.
+    expect(h.received.map(t => [t.actor.id, t.text, t.addressed])).toEqual([['bob', 'Item 8\n\nplain issue', undefined],
+      ['bob', 'thanks @me, please look', 'mention'], ['me', 'looks fine, cc @me', 'mention']])
+    const policy = settingsPolicy(h.store.settings(), h.sources)
+    const thread = h.store.threads.get(`gitcode:${REPO}:issue:8`)!
+    // bob is not on the list, so neither his post nor his mention is admitted; the account's own mention is an explicit request.
+    expect(policy.gate(h.received[0]!, thread, [])).toMatchObject({ admissible: false })
+    expect(policy.gate(h.received[1]!, thread, [])).toMatchObject({ admissible: false })
+    expect(policy.gate(h.received[2]!, thread, [])).toMatchObject({ admissible: true, strength: 'explicit' })
+  })
+
   it('replies in a code comment\'s review discussion, and once per message', async () => {
     const h = host()
     const routes = { issues: [], pulls: [{ ...item(3, 'pr'), html_url: `https://gitcode.com/${REPO}/merge_requests/3`, head: { ref: 'fix', sha: 'abc' } }],

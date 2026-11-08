@@ -32,6 +32,38 @@ describe('worker shims', () => {
     const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
     expect(JSON.parse(stdout)).toEqual({ login: 'agent-bot', config: `${dir}/agent-config`, path: [join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':') })
   })
+  it('mark every GitCode post a worker writes with gc, so the GitCode Source never hears the agent', async () => {
+    // The fake gc prints each argument, and the content of each file argument, between NUL bytes.
+    const gc = program(join(dir, 'gc-agent'), 'for arg in "$@"; do printf "%s\\0" "$arg"; [ -f "$arg" ] && { printf "file:"; cat "$arg"; printf "\\0"; }; done')
+    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined, gitcode: { cli: gc, repository: 'a/b', login: 'me', email: '' } }), [])
+    const run = async (args: string[], input?: string) => {
+      const child = spawn(join(workerBin(dir), 'gc'), args, { env: { PATH: '/usr/bin:/bin', TMPDIR: dir } })
+      let out = ''
+      child.stdout.on('data', chunk => { out += String(chunk) })
+      child.stdin.end(input ?? '')
+      await new Promise(done => child.on('close', done))
+      return out.split('\0').slice(0, -1)
+    }
+    const mark = '<!-- dsh-superagent:agent -->'
+    expect(await run(['--no-interactive', 'pr', 'comment', '3', '-R', 'a/b', '--body', 'cc @me, done'])).toEqual(
+      ['--no-interactive', 'pr', 'comment', '3', '-R', 'a/b', '--body', `cc @me, done\n\n${mark}`])
+    expect(await run(['issue', 'create', '-b', 'x', '--title', 'T'])).toEqual(['issue', 'create', '-b', `x\n\n${mark}`, '--title', 'T'])
+    expect(await run(['pr', 'review', '4', '--comment=ok'])).toEqual(['pr', 'review', '4', `--comment=ok\n\n${mark}`])
+    expect(await run(['pr', 'reply', '4', '--discussion', 'd1', '-b', 'fixed'])).toEqual(['pr', 'reply', '4', '--discussion', 'd1', '-b', `fixed\n\n${mark}`])
+    // A body file, or standard input, becomes a marked copy; the original file is unchanged.
+    const body = join(dir, 'body.md')
+    writeFileSync(body, 'from a file\n')
+    const [, , flag, copy, content] = await run(['pr', 'create', '--body-file', body, '--title', 'T'])
+    expect([flag, content]).toEqual(['--body-file', `file:from a file\n\n\n${mark}\n`])
+    expect(copy).not.toBe(body)
+    expect(readFileSync(body, 'utf8')).toBe('from a file\n')
+    expect((await run(['issue', 'comment', '1', '-F', '-'], 'piped'))[5]).toBe(`file:piped\n\n${mark}\n`)
+    // An already marked body, and commands that are not posts, pass unchanged.
+    expect(await run(['issue', 'comment', '1', '-b', 'r <!-- dsh-superagent:m1 -->'])).toEqual(['issue', 'comment', '1', '-b', 'r <!-- dsh-superagent:m1 -->'])
+    expect(await run(['pr', 'checkout', '5', '-b', 'topic'])).toEqual(['pr', 'checkout', '5', '-b', 'topic'])
+    expect(await run(['api', 'repos/a/b/issues', '-F', 'body=@x'])).toEqual(['api', 'repos/a/b/issues', '-F', 'body=@x'])
+    expect(await run(['--no-interactive', 'issue', 'view', '7', '-c'])).toEqual(['--no-interactive', 'issue', 'view', '7', '-c'])
+  })
   it('make `lark-cli` fail without a Feishu bot and each blocked command fail with the agent\'s login', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['personal-gh'])
     const bin = workerBin(dir)

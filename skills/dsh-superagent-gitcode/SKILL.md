@@ -10,7 +10,7 @@ GitCode numbers Issues and pull requests separately in each repository: thread `
 **The account may be a person's own.** Everything the agent posts appears under the same name as that person, so:
 
 - Begin every Issue, comment, review reply and PR description you write on GitCode with the disclosure line the Communication section names, so readers can tell your posts from the person's.
-- Only what starts `@<account> <keyword>` (such as `@zhangzijie superagent, review this PR`) is addressed to the agent. Never begin a post of your own that way, and never quote such a line at the start of a post: the Source would take it as a new request.
+- Only what addresses the agent is a request: with a keyword, a post that starts `@<account> <keyword>` (such as `@zhangzijie superagent, review this PR`); with an empty keyword, any post that mentions `@<account>`. Never write that in a post of your own, not even quoted: the Source would take it as a new request. `gc issue|pr comment|create|edit|reply|review` marks what you write with a hidden `<!-- dsh-superagent:agent -->` line so the Source skips it; a post written another way, such as with `gc api`, must end with that line itself.
 - The account's other posts are not delivered to you; read the thread when you need them.
 
 Reading, beyond the thread context delivered with each trigger:
